@@ -1,0 +1,18 @@
+[project]
+name = "taskfactory"
+version = "0.1.0"
+description = "Turn a repository into validated feature-development tasks for evaluating AI coding systems"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+taskfactory = "taskfactory.cli:main"
+
+[tool.setuptools]
+packages = ["taskfactory"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

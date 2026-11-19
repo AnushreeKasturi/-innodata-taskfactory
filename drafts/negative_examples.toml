@@ -1,0 +1,62 @@
+# Drafts that MUST be rejected. Used by the harness's own tests to show the filters work.
+
+[[tasks]]
+title = "Weak tests: never exercise the feature"
+category = "query_aggregation"
+requirements = '''
+Add `Catalog.search(text: str) -> list[Product]` returning products whose name contains `text`
+(case-insensitive), sorted by SKU.
+'''
+
+[[tasks.source_edits]]
+path = "shopcart/catalog.py"
+search = '''
+    def __len__(self) -> int:
+'''
+replace = '''
+    def search(self, text: str) -> list[Product]:
+        needle = text.lower()
+        return sorted((p for p in self._products.values() if needle in p.name.lower()), key=lambda p: p.sku)
+
+    def __len__(self) -> int:
+'''
+
+[[tasks.test_edits]]
+path = "tests/test_search.py"
+search = ""
+replace = '''
+def test_by_category_still_works(catalog):
+    assert [p.sku for p in catalog.by_category("books")] == ["BK1"]
+'''
+
+
+[[tasks]]
+title = "Breaks existing behaviour"
+category = "configuration"
+requirements = '''
+Add `FREE_SHIPPING_THRESHOLD_CENTS` override: free shipping now starts at 6000 cents.
+'''
+
+[[tasks.source_edits]]
+path = "shopcart/pricing.py"
+search = '''
+FREE_SHIPPING_THRESHOLD_CENTS = 5000
+'''
+replace = '''
+FREE_SHIPPING_THRESHOLD_CENTS = 6000
+'''
+
+[[tasks.test_edits]]
+path = "tests/test_threshold.py"
+search = ""
+replace = '''
+from shopcart import Cart
+from shopcart.pricing import shipping_cents
+
+
+def test_5700_now_pays_shipping(catalog):
+    cart = Cart(catalog)
+    cart.add("HDP")
+    cart.add("BK1")
+    assert shipping_cents(cart) == 499
+'''

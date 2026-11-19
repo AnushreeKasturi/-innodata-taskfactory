@@ -1,0 +1,384 @@
+# Hand-written reference drafts for the stand-in shopcart repo.
+# They exercise the validation harness without needing model access.
+
+[[tasks]]
+title = "Add discount codes with eligibility rules"
+category = "business_rule"
+requirements = '''
+# Discount codes
+
+Customers can apply a discount code to an order. Add the following to `shopcart/pricing.py`.
+
+## `DiscountCode`
+A frozen dataclass `DiscountCode(code: str, percent: int = 0, amount_cents: int = 0, min_subtotal_cents: int = 0, category: str | None = None)`.
+
+- `percent` must be between 0 and 100 inclusive; `amount_cents` and `min_subtotal_cents` must be >= 0.
+  Otherwise constructing the code raises `ValueError`.
+
+## `IneligibleCode`
+An exception `IneligibleCode(code: str, reason: str)` that stores `code` and `reason` as attributes.
+
+## `discount_cents(cart, code) -> int`
+- If the cart subtotal is below `min_subtotal_cents`, raise `IneligibleCode`. A subtotal exactly equal to the minimum is allowed.
+- The *eligible amount* is the sum of line totals for products whose category equals `code.category`
+  (or all lines when `category` is `None`). If the eligible amount is 0, raise `IneligibleCode`.
+- The discount is `percent` of the eligible amount, rounded half up to a whole cent, plus `amount_cents`.
+- The discount never exceeds the eligible amount.
+
+## Changes to existing functions
+- `shipping_cents(cart, discount: int = 0)`: shipping is free when the cart is empty or when
+  `subtotal - discount` is at least `FREE_SHIPPING_THRESHOLD_CENTS`.
+- `total_cents(cart, code: DiscountCode | None = None)`: `subtotal - discount + tax + shipping`, where
+  tax is still computed on the undiscounted prices and shipping uses the discounted subtotal.
+  Without a code the result is unchanged.
+'''
+
+[[tasks.source_edits]]
+path = "shopcart/pricing.py"
+search = '''
+from .cart import Cart
+'''
+replace = '''
+from dataclasses import dataclass
+
+from .cart import Cart
+'''
+
+[[tasks.source_edits]]
+path = "shopcart/pricing.py"
+search = '''
+def shipping_cents(cart: Cart) -> int:
+    if cart.is_empty() or cart.subtotal_cents() >= FREE_SHIPPING_THRESHOLD_CENTS:
+        return 0
+    return SHIPPING_CENTS
+
+
+def total_cents(cart: Cart) -> int:
+    return cart.subtotal_cents() + tax_cents(cart) + shipping_cents(cart)
+'''
+replace = '''
+class IneligibleCode(Exception):
+    """Raised when a discount code cannot be applied to a cart."""
+
+    def __init__(self, code: str, reason: str) -> None:
+        super().__init__(f"{code}: {reason}")
+        self.code = code
+        self.reason = reason
+
+
+@dataclass(frozen=True)
+class DiscountCode:
+    code: str
+    percent: int = 0
+    amount_cents: int = 0
+    min_subtotal_cents: int = 0
+    category: str | None = None
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.percent <= 100:
+            raise ValueError("percent must be between 0 and 100")
+        if self.amount_cents < 0 or self.min_subtotal_cents < 0:
+            raise ValueError("amounts must be non-negative")
+
+
+def discount_cents(cart: Cart, code: DiscountCode) -> int:
+    if cart.subtotal_cents() < code.min_subtotal_cents:
+        raise IneligibleCode(code.code, "minimum subtotal not reached")
+    eligible = sum(
+        p.price_cents * qty
+        for p, qty in cart.lines()
+        if code.category is None or p.category == code.category
+    )
+    if eligible == 0:
+        raise IneligibleCode(code.code, "no eligible items")
+    off = _round_half_up(eligible * code.percent, 100) + code.amount_cents
+    return min(off, eligible)
+
+
+def shipping_cents(cart: Cart, discount: int = 0) -> int:
+    if cart.is_empty() or cart.subtotal_cents() - discount >= FREE_SHIPPING_THRESHOLD_CENTS:
+        return 0
+    return SHIPPING_CENTS
+
+
+def total_cents(cart: Cart, code: DiscountCode | None = None) -> int:
+    discount = discount_cents(cart, code) if code is not None else 0
+    return cart.subtotal_cents() - discount + tax_cents(cart) + shipping_cents(cart, discount)
+'''
+
+[[tasks.test_edits]]
+path = "tests/test_discounts.py"
+search = ""
+replace = '''
+import pytest
+
+from shopcart import Cart, Product
+from shopcart.pricing import DiscountCode, IneligibleCode, discount_cents, shipping_cents, total_cents
+
+
+def _cart(catalog, **items):
+    cart = Cart(catalog)
+    for sku, qty in items.items():
+        cart.add(sku, qty)
+    return cart
+
+
+def test_percent_discount(catalog):
+    cart = _cart(catalog, APL=3, BK1=1)  # subtotal 1860
+    code = DiscountCode("TEN", percent=10)
+    assert discount_cents(cart, code) == 186
+    assert total_cents(cart, code) == 1860 - 186 + 18 + 499
+
+
+def test_percent_rounds_half_up(catalog):
+    cart = _cart(catalog, APL=3)  # 360
+    assert discount_cents(cart, DiscountCode("P3", percent=3)) == 11  # 10.8
+    assert discount_cents(cart, DiscountCode("P7", percent=7)) == 25  # 25.2
+
+
+def test_percent_bounds_are_inclusive(catalog):
+    cart = _cart(catalog, APL=1)
+    assert discount_cents(cart, DiscountCode("ALL", percent=100)) == 120
+    assert discount_cents(cart, DiscountCode("FIX", percent=0, amount_cents=20)) == 20
+
+
+def test_category_restricted(catalog):
+    cart = _cart(catalog, APL=3, BK1=1)
+    assert discount_cents(cart, DiscountCode("BOOKS50", percent=50, category="books")) == 750
+
+
+def test_fixed_amount_capped_at_eligible(catalog):
+    cart = _cart(catalog, BK1=1)
+    assert discount_cents(cart, DiscountCode("BIG", amount_cents=2000)) == 1500
+
+
+def test_cap_applies_to_eligible_not_subtotal(catalog):
+    cart = _cart(catalog, APL=1, BK1=1)
+    assert discount_cents(cart, DiscountCode("F", amount_cents=500, category="food")) == 120
+
+
+def test_percent_and_amount_combine(catalog):
+    cart = _cart(catalog, APL=3, BK1=1)
+    assert discount_cents(cart, DiscountCode("BOTH", percent=10, amount_cents=100)) == 286
+
+
+def test_minimum_subtotal_boundary(catalog):
+    cart = _cart(catalog, APL=3, BK1=1)  # 1860
+    assert discount_cents(cart, DiscountCode("MIN", percent=10, min_subtotal_cents=1860)) == 186
+    with pytest.raises(IneligibleCode) as exc:
+        discount_cents(cart, DiscountCode("MIN", percent=10, min_subtotal_cents=1861))
+    assert exc.value.code == "MIN"
+
+
+def test_no_eligible_items(catalog):
+    cart = _cart(catalog, APL=3, BK1=1)
+    with pytest.raises(IneligibleCode):
+        total_cents(cart, DiscountCode("GEAR", percent=10, category="general"))
+
+
+def test_free_shipping_uses_discounted_subtotal(catalog):
+    cart = _cart(catalog, HDP=1, BK1=1)  # 5700 - 1140 = 4560 < 5000
+    assert shipping_cents(cart, 1140) == 499
+    assert total_cents(cart, DiscountCode("TWENTY", percent=20)) == 5700 - 1140 + 756 + 499
+
+
+def test_free_shipping_at_exact_threshold_after_discount(catalog):
+    cart = _cart(catalog, HDP=1, BK1=1)  # 5700 - 700 = 5000
+    assert total_cents(cart, DiscountCode("FLAT", amount_cents=700)) == 5700 - 700 + 756
+
+
+def test_tax_is_on_undiscounted_prices(catalog):
+    cart = _cart(catalog, HDP=1)
+    assert total_cents(cart, DiscountCode("H", amount_cents=200)) == 4200 - 200 + 756 + 499
+
+
+@pytest.mark.parametrize("kwargs", [{"percent": -1}, {"percent": 101}, {"amount_cents": -5}, {"min_subtotal_cents": -1}])
+def test_invalid_codes(kwargs):
+    with pytest.raises(ValueError):
+        DiscountCode("BAD", **kwargs)
+
+
+def test_no_code_unchanged(catalog):
+    cart = _cart(catalog, APL=3, BK1=1)
+    assert total_cents(cart) == 1860 + 18 + 499
+    assert shipping_cents(cart) == 499
+
+
+def test_shipping_default_discount_is_zero_at_threshold(catalog):
+    catalog.add(Product("TV5", "Monitor", 5000, "general"))
+    cart = _cart(catalog, TV5=1)
+    assert shipping_cents(cart) == 0
+'''
+
+
+[[tasks]]
+title = "Enforce per-order quantity limits"
+category = "validation"
+requirements = '''
+# Per-order quantity limits
+
+Some products may only be bought in limited quantities per order.
+
+## `Product.max_per_order`
+Add a field `max_per_order: int | None = None` to `Product` (after `category`). `None` means no limit.
+`Catalog.add` raises `ValueError` if `max_per_order` is set and is less than 1.
+
+## `QuantityLimitExceeded`
+Add an exception `QuantityLimitExceeded(sku: str, limit: int, requested: int)` to `shopcart/cart.py`.
+It must be a subclass of `ValueError` and store `sku`, `limit` and `requested` as attributes, where
+`requested` is the total quantity the cart would have held.
+
+## `Cart.add`
+If adding would make the cart's quantity of that product exceed `max_per_order`, raise
+`QuantityLimitExceeded` and leave the cart unchanged. Reaching the limit exactly is allowed.
+Removing items frees up allowance again.
+
+## `Cart.remaining_allowance(sku) -> int | None`
+Returns how many more units of `sku` can be added, or `None` if the product has no limit.
+Raises `UnknownProduct` for unknown SKUs.
+'''
+
+[[tasks.source_edits]]
+path = "shopcart/catalog.py"
+search = '''
+    price_cents: int
+    category: str = "general"
+'''
+replace = '''
+    price_cents: int
+    category: str = "general"
+    max_per_order: int | None = None
+'''
+
+[[tasks.source_edits]]
+path = "shopcart/catalog.py"
+search = '''
+        if product.price_cents < 0:
+            raise ValueError("price must be non-negative")
+'''
+replace = '''
+        if product.price_cents < 0:
+            raise ValueError("price must be non-negative")
+        if product.max_per_order is not None and product.max_per_order < 1:
+            raise ValueError("max_per_order must be at least 1")
+'''
+
+[[tasks.source_edits]]
+path = "shopcart/cart.py"
+search = '''
+from .catalog import Catalog, Product
+'''
+replace = '''
+from .catalog import Catalog, Product
+
+
+class QuantityLimitExceeded(ValueError):
+    def __init__(self, sku: str, limit: int, requested: int) -> None:
+        super().__init__(f"{sku}: limit {limit} per order, requested {requested}")
+        self.sku = sku
+        self.limit = limit
+        self.requested = requested
+'''
+
+[[tasks.source_edits]]
+path = "shopcart/cart.py"
+search = '''
+        self._catalog.get(sku)  # raises UnknownProduct
+        self._lines[sku] = self._lines.get(sku, 0) + qty
+'''
+replace = '''
+        product = self._catalog.get(sku)  # raises UnknownProduct
+        new_qty = self._lines.get(sku, 0) + qty
+        if product.max_per_order is not None and new_qty > product.max_per_order:
+            raise QuantityLimitExceeded(sku, product.max_per_order, new_qty)
+        self._lines[sku] = new_qty
+
+    def remaining_allowance(self, sku: str) -> int | None:
+        product = self._catalog.get(sku)
+        if product.max_per_order is None:
+            return None
+        return product.max_per_order - self._lines.get(sku, 0)
+'''
+
+[[tasks.test_edits]]
+path = "tests/test_quantity_limits.py"
+search = ""
+replace = '''
+import pytest
+
+from shopcart import Cart, Catalog, Product, UnknownProduct
+from shopcart.cart import QuantityLimitExceeded
+
+
+@pytest.fixture
+def limited(catalog):
+    catalog.add(Product("GPU", "Graphics card", 30000, "general", max_per_order=2))
+    return catalog
+
+
+def test_add_up_to_limit(limited):
+    cart = Cart(limited)
+    cart.add("GPU", 2)
+    assert cart.quantity("GPU") == 2
+
+
+def test_single_add_over_limit_rejected_and_cart_unchanged(limited):
+    cart = Cart(limited)
+    with pytest.raises(QuantityLimitExceeded) as exc:
+        cart.add("GPU", 3)
+    assert (exc.value.sku, exc.value.limit, exc.value.requested) == ("GPU", 2, 3)
+    assert cart.quantity("GPU") == 0
+
+
+def test_cumulative_adds_over_limit(limited):
+    cart = Cart(limited)
+    cart.add("GPU")
+    with pytest.raises(QuantityLimitExceeded) as exc:
+        cart.add("GPU", 2)
+    assert exc.value.requested == 3
+    assert cart.quantity("GPU") == 1
+
+
+def test_limit_error_is_value_error(limited):
+    with pytest.raises(ValueError):
+        Cart(limited).add("GPU", 5)
+
+
+def test_remove_frees_allowance(limited):
+    cart = Cart(limited)
+    cart.add("GPU", 2)
+    cart.remove("GPU", 1)
+    cart.add("GPU")
+    assert cart.quantity("GPU") == 2
+
+
+def test_remaining_allowance(limited):
+    cart = Cart(limited)
+    assert cart.remaining_allowance("GPU") == 2
+    cart.add("GPU")
+    assert cart.remaining_allowance("GPU") == 1
+    assert cart.remaining_allowance("APL") is None
+    with pytest.raises(UnknownProduct):
+        cart.remaining_allowance("NOPE")
+
+
+def test_unlimited_products_unaffected(limited):
+    cart = Cart(limited)
+    cart.add("APL", 500)
+    assert cart.quantity("APL") == 500
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+def test_catalog_rejects_invalid_limit(bad):
+    with pytest.raises(ValueError):
+        Catalog().add(Product("X", "x", 100, max_per_order=bad))
+
+
+def test_limit_of_one():
+    c = Catalog()
+    c.add(Product("ONE", "one", 100, max_per_order=1))
+    cart = Cart(c)
+    cart.add("ONE")
+    with pytest.raises(QuantityLimitExceeded):
+        cart.add("ONE")
+'''
