@@ -37,14 +37,14 @@ def _quote(arg: str) -> str:
     return subprocess.list2cmdline([arg]) if os.name == "nt" else shlex.quote(arg)
 
 
-def _env() -> dict[str, str]:
-    return {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONHASHSEED": "0"}
+def _env(cfg: RepoConfig) -> dict[str, str]:
+    return {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONHASHSEED": "0", **cfg.env}
 
 
 def run_setup(wt: Path, cfg: RepoConfig) -> None:
     if not cfg.setup_cmd:
         return
-    p = subprocess.run(cfg.setup_cmd, shell=True, cwd=wt, capture_output=True, timeout=cfg.timeout, env=_env())
+    p = subprocess.run(cfg.setup_cmd, shell=True, cwd=wt, capture_output=True, timeout=cfg.timeout, env=_env(cfg))
     if p.returncode != 0:
         tail = (p.stdout + p.stderr).decode("utf-8", "replace")[-3000:]
         raise RuntimeError(f"setup_cmd failed ({p.returncode}):\n{tail}")
@@ -54,19 +54,39 @@ def run_tests(wt: Path, cfg: RepoConfig, tests: list[str] | None = None) -> RunR
     fd, junit = tempfile.mkstemp(prefix="tf-junit-", suffix=".xml")
     os.close(fd)
     os.unlink(junit)
-    cmd = cfg.test_cmd.format(junit=_quote(junit), tests=" ".join(_quote(t) for t in tests or []))
+    cmd = cfg.test_cmd.format(junit=_quote(junit), python=_quote(cfg.python),
+                              tests=" ".join(_quote(t) for t in tests or []))
     start = time.monotonic()
     try:
-        p = subprocess.run(cmd, shell=True, cwd=wt, capture_output=True, timeout=cfg.timeout, env=_env())
+        p = subprocess.run(cmd, shell=True, cwd=wt, capture_output=True, timeout=cfg.timeout, env=_env(cfg))
         rc: int | None = p.returncode
-        log = (p.stdout + p.stderr).decode("utf-8", "replace")
+        stdout, stderr = p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace")
     except subprocess.TimeoutExpired:
-        rc, log = None, f"TIMEOUT after {cfg.timeout}s"
+        rc, stdout, stderr = None, "", f"TIMEOUT after {cfg.timeout}s"
     duration = time.monotonic() - start
-    outcomes = parse_junit(Path(junit)) if os.path.exists(junit) else {}
+    if cfg.parser == "pytest":
+        outcomes = parse_pytest_summary(stdout, stderr)
+    else:
+        outcomes = parse_junit(Path(junit)) if os.path.exists(junit) else {}
     if os.path.exists(junit):
         os.unlink(junit)
+    log = stdout + stderr
     return RunResult(outcomes, rc is None or not outcomes, rc, duration, log[-6000:])
+
+
+_PYTEST_STATUS = {"PASSED": PASS, "FAILED": FAIL, "ERROR": FAIL, "SKIPPED": SKIP}
+
+
+def parse_pytest_summary(stdout: str, stderr: str) -> dict[str, str]:
+    """Node ids from `pytest -rA`, using the exact parser shipped inside every Harbor package,
+    so the ids we validate with are the ids the grader will look up."""
+    from .harbor_templates.parser import parse_test_output
+    out: dict[str, str] = {}
+    for r in parse_test_output(stdout, stderr):
+        status = _PYTEST_STATUS[r.status.name]
+        if out.get(r.name) != FAIL:
+            out[r.name] = status
+    return out
 
 
 def parse_junit(path: Path) -> dict[str, str]:

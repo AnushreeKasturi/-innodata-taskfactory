@@ -1,0 +1,31 @@
+# pallets/click (supplied Python repository), pinned at release 8.5.1.
+#
+# Local setup (once):
+#   git clone https://github.com/pallets/click.git work/click
+#   git -C work/click checkout -b base 8.5.1
+#   python -m venv work/click/.venv && work/click/.venv/Scripts/python -m pip install -e work/click "pytest==9.2.0"
+# (on Linux/macOS the interpreter is work/click/.venv/bin/python)
+#
+# Validation runs inside throwaway git worktrees; PYTHONPATH=src makes each worktree's own
+# source win over the editable install.
+
+[repo]
+python = "auto"
+test_cmd = "{python} -m pytest -q -rA -p no:cacheprovider --color=no --continue-on-collection-errors {tests}"
+parser = "pytest"
+env = { PYTHONPATH = "src" }
+upstream_ref = "origin/main"
+timeout = 900
+mutation_threshold = 0.6
+max_mutants = 20
+p2p_files = 4
+p2p_max = 250
+
+[harbor]
+source_repo = "pallets/click"
+clone_url = "https://github.com/pallets/click.git"
+license = "BSD-3-Clause"
+programming_language = "python"
+instance_prefix = "pallets__click"
+base_image = "python:3.12-slim-bookworm"
+install_cmd = 'python -m venv /app/.venv && /app/.venv/bin/pip install -e . "pytest==9.2.0"'

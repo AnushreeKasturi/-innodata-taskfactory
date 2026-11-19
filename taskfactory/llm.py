@@ -100,6 +100,8 @@ class LLM:
         self.usage["calls"] += 1
         self.usage["prompt_tokens"] += u.get("prompt_tokens", 0)
         self.usage["completion_tokens"] += u.get("completion_tokens", 0)
+        cached = (u.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+        self.usage["cached_tokens"] = self.usage.get("cached_tokens", 0) + (cached or 0)
         self.usage["seconds"] = round(self.usage["seconds"] + time.monotonic() - start, 1)
         if self.log_path:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)

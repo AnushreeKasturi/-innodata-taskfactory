@@ -4,3 +4,6 @@ __pycache__/
 .env
 work/
 out/
+vendor/
+submission/
+sc/

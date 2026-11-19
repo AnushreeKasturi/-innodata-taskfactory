@@ -1,7 +1,14 @@
-# Config for the stand-in shopcart repo. Copy and adapt for the official repository.
+# Config for the stand-in shopcart repo (offline demo + the harness's own tests).
 [repo]
-test_cmd = "python -m pytest -q -p no:cacheprovider --continue-on-collection-errors --junitxml={junit} {tests}"
-setup_cmd = ""
+test_cmd = "{python} -m pytest -q -rA -p no:cacheprovider --color=no --continue-on-collection-errors {tests}"
+parser = "pytest"
 timeout = 300
 mutation_threshold = 0.6
 max_mutants = 20
+
+[harbor]
+source_repo = "example/shopcart"
+clone_url = "https://example.invalid/shopcart.git"
+license = "MIT"
+programming_language = "python"
+instance_prefix = "example__shopcart"

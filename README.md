@@ -32,9 +32,38 @@ repo @ base commit
 | Meaningful variation | Proposals are forced across categories (business rule, validation, state interaction, aggregation, configuration, lifecycle, error handling). `SUMMARY.md` reports the category mix, files touched and how similar the requirement texts are |
 | Fair tasks | The interface check fails a task whose tests call new names the requirements never mention |
 
-## Quick start
+## Target: `pallets/click` @ 8.5.1, Harbor packages
+The organisers' Track 1 kit supplies `pallets/click`, `colinhacks/zod` and `open-source-parsers/jsoncpp`
+and requires the [Harbor](https://www.harborframework.com/) task interface. This pipeline targets Click.
 ```bash
-python -m taskfactory init-sample work/shopcart            # stand-in repo until the official one is out
+# one-time setup (see configs/click.toml)
+git clone https://github.com/pallets/click.git work/click && git -C work/click checkout -b base 8.5.1
+python -m venv work/click/.venv && work/click/.venv/Scripts/python -m pip install -e work/click "pytest==9.2.0"
+
+# generate + validate (needs a model key, see .env.example)
+python -m taskfactory generate --repo work/click --config configs/click.toml --base base -n 8 --out out/click
+
+# export valid packages in the Harbor interface + pipeline_run.json, then run the organiser lint
+python -m taskfactory export-harbor out/click --config configs/click.toml --dest submission/generated_tasks
+
+# official soundness check (needs Docker + `uv tool install harbor`): oracle = 1.0, nop = 0.0
+harbor run -p submission/generated_tasks/<instance_id> -a oracle -k 1 -o sc/<instance_id>/oracle --no-delete -y
+harbor run -p submission/generated_tasks/<instance_id> -a nop    -k 1 -o sc/<instance_id>/nop    --no-delete -y
+```
+Exported packages contain `task.toml`, `instruction.md`, `solution/{solve.sh,patch.diff}`,
+`tests/{test.sh,grade.py,parser.py,run_script.sh,test_patch.diff,fail_to_pass.json,pass_to_pass.json}` and a
+self-contained `environment/Dockerfile` (clone at `base_commit`, fresh git tree, pinned pytest). `grade.py`,
+`parser.py` and `test.sh` are the organisers' reference files, unchanged. Local validation uses the same
+parser, so the test ids we validate with are the ids the grader looks up.
+
+Gates applied before export: grounded (extends existing modules), novel against live upstream `main`,
+hygiene (no authoring tells), base suite green, fail-to-pass, reference passes, no regressions,
+deterministic, mutation score, interface disclosed, and a **curated** regression set (the test files most
+related to the change, e.g. `test_IntRange.py` + `test_info_dict.py` for an `IntRange` feature).
+
+## Offline demo (stand-in repo)
+```bash
+python -m taskfactory init-sample work/shopcart
 
 # offline: validate the hand-written example drafts (no model needed)
 python -m taskfactory drafts drafts/shopcart.toml --repo work/shopcart --config configs/shopcart.toml --out out/tasks

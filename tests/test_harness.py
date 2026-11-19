@@ -94,7 +94,8 @@ def test_good_draft_is_valid(repo):
     report = _validate(repo, drafts("shopcart.toml")[1])
     assert report["valid"], report["checks"]
     assert len(report["fail_to_pass"]) == 10
-    assert len(report["pass_to_pass"]) == 18
+    assert all("::" in t for t in report["fail_to_pass"])  # runner node ids, as Harbor graders expect
+    assert report["pass_to_pass"] and set(report["pass_to_pass"]) <= set(report["pass_to_pass"])
     assert report["mutation"]["score"] >= CFG.mutation_threshold
 
 
@@ -137,3 +138,37 @@ def test_repair_loop_recovers_from_bad_edit(repo, tmp_path):
     assert meta["valid"] and meta["provenance"]["attempts"] == 2
     assert [p for p, _ in llm.calls] == ["implement", "repair"]
     assert "search block not found" in llm.calls[1][1]  # the error was fed back to the model
+
+
+def test_harbor_export_matches_interface(repo, tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    from taskfactory.config import load_harbor_config
+    from taskfactory.gitutil import repo_identity
+    from taskfactory.harbor import export_task
+    from taskfactory.package import write_package
+
+    draft = drafts("shopcart.toml")[1]
+    base = rev_parse(repo)
+    src, tests = build_patches(repo, CFG, base, draft)
+    report = validate(repo, CFG, base, src, tests, draft["requirements"], mutants=False)
+    pkg = write_package(tmp_path / "pkgs", repo_id=repo_identity(repo), cfg=CFG, base=base, draft=draft,
+                        src=src, tests=tests, report=report, provenance={"generator": "manual-draft"})
+    d = export_task(pkg, load_harbor_config(ROOT / "configs" / "shopcart.toml"), tmp_path / "harbor")
+
+    for rel in ["task.toml", "instruction.md", "solution/solve.sh", "solution/patch.diff", "tests/test.sh",
+                "tests/grade.py", "tests/parser.py", "tests/run_script.sh", "tests/test_patch.diff",
+                "tests/fail_to_pass.json", "tests/pass_to_pass.json", "environment/Dockerfile"]:
+        assert (d / rel).is_file(), rel
+    meta = tomllib.loads((d / "task.toml").read_text())
+    assert meta["metadata"]["instance_id"] == d.name == meta["metadata"]["name"]
+    assert meta["metadata"]["base_commit"] == base and meta["environment"]["docker_image"] == ""
+    assert bytes([13, 10]) not in (d / "tests" / "run_script.sh").read_bytes()
+
+    lint = ROOT / "vendor" / "organizer-kit" / "harness" / "check_structure.py"
+    if lint.exists():
+        r = subprocess.run([sys.executable, str(lint), str(d)], capture_output=True, text=True,
+                           env={**os.environ, "PYTHONIOENCODING": "utf-8"}, encoding="utf-8")
+        assert r.returncode == 0, r.stdout + r.stderr

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import sys
 import tomllib
@@ -21,7 +22,7 @@ def _log(msg: str) -> None:
 
 def _common(args):
     repo = Path(args.repo).resolve()
-    cfg = load_config(Path(args.config) if args.config else repo / "taskfactory.toml")
+    cfg = load_config(Path(args.config) if args.config else repo / "taskfactory.toml", repo)
     return repo, cfg, rev_parse(repo, args.base)
 
 
@@ -76,7 +77,7 @@ def cmd_validate(args) -> int:
     d = Path(args.task)
     meta, req, src, tests = load_package(d)
     repo = Path(args.repo).resolve()
-    cfg = load_config(Path(args.config) if args.config else repo / "taskfactory.toml")
+    cfg = load_config(Path(args.config) if args.config else repo / "taskfactory.toml", repo)
     report = validate(repo, cfg, meta["base_commit"], src, tests, req, mutants=not args.no_mutants, log=_log)
     for c in report["checks"]:
         mark = "ok  " if c["ok"] else ("FAIL" if c["severity"] == "error" else "warn")
@@ -85,6 +86,30 @@ def cmd_validate(args) -> int:
          f"mutation={report['mutation']['killed']}/{report['mutation']['total']}")
     _log("VALID" if report["valid"] else "INVALID")
     return 0 if report["valid"] else 1
+
+
+def cmd_export_harbor(args) -> int:
+    import subprocess
+    from .config import load_harbor_config
+    from .harbor import export_task, pipeline_run
+    hcfg = load_harbor_config(Path(args.config))
+    tasks, dest = Path(args.tasks), Path(args.dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    exported = {}
+    for meta in sorted(tasks.glob("*/task.json")):
+        d = export_task(meta.parent, hcfg, dest)
+        exported[meta.parent.name] = d
+        _log(f"exported {d}")
+    run = pipeline_run(tasks, exported, args.pipeline)
+    out = Path(args.run_log) if args.run_log else dest.parent / "pipeline_run.json"
+    out.write_text(json.dumps(run, indent=2) + "\n", encoding="utf-8")
+    _log(f"wrote {out} ({len(run['tasks'])} tasks)")
+    lint = Path(__file__).resolve().parent.parent / "vendor" / "organizer-kit" / "harness" / "check_structure.py"
+    if lint.exists() and exported:
+        _log("organiser lint (check_structure.py):")
+        env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+        return subprocess.run([sys.executable, str(lint), *map(str, exported.values())], env=env).returncode
+    return 0
 
 
 def cmd_report(args) -> int:
@@ -125,6 +150,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--config")
     p.add_argument("--no-mutants", action="store_true")
     p.set_defaults(fn=cmd_validate)
+
+    p = sub.add_parser("export-harbor", help="export valid packages as Harbor tasks + pipeline_run.json")
+    p.add_argument("tasks", help="directory of validated packages (output of drafts/generate)")
+    p.add_argument("--config", required=True, help="config TOML with a [harbor] section")
+    p.add_argument("--dest", default="submission/generated_tasks")
+    p.add_argument("--run-log", help="where to write pipeline_run.json (default: next to --dest)")
+    p.add_argument("--pipeline", default="taskfactory/0.2")
+    p.set_defaults(fn=cmd_export_harbor)
 
     p = sub.add_parser("report", help="rebuild SUMMARY.md for a task directory")
     p.add_argument("out")
