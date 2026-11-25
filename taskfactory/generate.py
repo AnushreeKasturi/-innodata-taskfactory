@@ -137,7 +137,8 @@ def existing_titles(out: Path) -> list[str]:
     titles = []
     for meta in out.glob("*/task.json"):
         d = json.loads(meta.read_text(encoding="utf-8"))
-        titles.append(f"{d.get('title')} [{d.get('category')}]")
+        axes = "; ".join(f"{k}={v}" for k, v in (d.get("axes") or {}).items())
+        titles.append(f"{d.get('title')} [{d.get('category')}] {axes}".strip())
     return titles
 
 
@@ -178,6 +179,7 @@ def generate_one(llm: LLM, repo: Path, cfg: RepoConfig, base: str, proposal: dic
         test_globs=cfg.test_globs, test_cmd=cfg.test_cmd), "implement")
     draft.setdefault("title", proposal.get("title"))
     draft.setdefault("category", proposal.get("category"))
+    draft["axes"] = proposal.get("axes") or draft.get("axes") or {}
 
     last = None
     for attempt in range(max_repairs + 1):
@@ -196,7 +198,8 @@ def generate_one(llm: LLM, repo: Path, cfg: RepoConfig, base: str, proposal: dic
             break
         try:
             draft = llm.chat_json(IMPLEMENT_SYSTEM, REPAIR_USER.format(
-                problems=problems, draft=json.dumps(draft, indent=2), files=files), "repair")
+                problems=problems, draft=json.dumps(draft, indent=2), files=files), "repair") | {
+                "axes": draft.get("axes", {})}
         except LLMError as e:
             log(f"  repair call failed: {e}")
             break

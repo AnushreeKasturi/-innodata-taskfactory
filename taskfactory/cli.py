@@ -16,6 +16,18 @@ from .report import summarize
 from .validate import failure_summary, validate
 
 
+def load_dotenv(path: Path = Path(".env")) -> None:
+    """Read KEY=VALUE lines from .env into the environment (existing variables win)."""
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            if v.strip():
+                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
 def _log(msg: str) -> None:
     print(msg, flush=True)
 
@@ -67,7 +79,14 @@ def cmd_generate(args) -> int:
     repo, cfg, base = _common(args)
     out = Path(args.out)
     llm = LLM.from_env(log_path=out / "_llm_log.jsonl")
-    generate(llm, repo, cfg, base, out, args.n, max_repairs=args.max_repairs, log=_log)
+    valid = lambda: len(list(out.glob("*/task.json")))
+    rounds = 0
+    while True:
+        rounds += 1
+        generate(llm, repo, cfg, base, out, args.n, max_repairs=args.max_repairs, log=_log)
+        if not args.target or valid() >= args.target or rounds >= args.max_rounds:
+            break
+        _log(f"{valid()}/{args.target} valid after round {rounds}; proposing more")
     _log(summarize(out))
     return 0
 
@@ -96,7 +115,17 @@ def cmd_export_harbor(args) -> int:
     tasks, dest = Path(args.tasks), Path(args.dest)
     dest.mkdir(parents=True, exist_ok=True)
     exported = {}
-    for meta in sorted(tasks.glob("*/task.json")):
+    metas = sorted(tasks.glob("*/task.json"))
+    if args.limit:
+        from .submit import select_diverse
+        keep = set(select_diverse(tasks, args.limit))
+        metas = [m for m in metas if m.parent.name in keep]
+        _log(f"selected {len(metas)} most mutually different packages: {sorted(keep)}")
+    for old in dest.iterdir():
+        if old.is_dir() and (old / "task.toml").exists():
+            import shutil
+            shutil.rmtree(old)  # only what this run exports ends up in the submission
+    for meta in metas:
         d = export_task(meta.parent, hcfg, dest)
         exported[meta.parent.name] = d
         _log(f"exported {d}")
@@ -109,6 +138,22 @@ def cmd_export_harbor(args) -> int:
         _log("organiser lint (check_structure.py):")
         env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
         return subprocess.run([sys.executable, str(lint), *map(str, exported.values())], env=env).returncode
+    return 0
+
+
+def cmd_selfcheck(args) -> int:
+    from .submit import selfcheck
+    tasks = [Path(t) for t in args.tasks]
+    if len(tasks) == 1 and not (tasks[0] / "task.toml").exists():
+        tasks = sorted(p.parent for p in tasks[0].glob("*/task.toml"))
+    return 0 if selfcheck(tasks, Path(args.out), log=_log, network=args.network) else 1
+
+
+def cmd_bundle(args) -> int:
+    from .submit import bundle
+    bundle(args.team, Path(args.submission), Path(args.tasks), Path(args.dest),
+           selfcheck_dir=Path(args.selfcheck) if args.selfcheck else None,
+           docs=[Path(d) for d in args.doc], log=_log)
     return 0
 
 
@@ -142,6 +187,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default="out/tasks")
     p.add_argument("-n", type=int, default=5, help="number of proposals")
     p.add_argument("--max-repairs", type=int, default=2)
+    p.add_argument("--target", type=int, default=0, help="keep proposing until this many packages are valid")
+    p.add_argument("--max-rounds", type=int, default=3)
     p.set_defaults(fn=cmd_generate)
 
     p = sub.add_parser("validate", help="re-validate an existing task package")
@@ -156,13 +203,30 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--config", required=True, help="config TOML with a [harbor] section")
     p.add_argument("--dest", default="submission/generated_tasks")
     p.add_argument("--run-log", help="where to write pipeline_run.json (default: next to --dest)")
-    p.add_argument("--pipeline", default="taskfactory/0.2")
+    p.add_argument("--pipeline", default="taskfactory/0.3")
+    p.add_argument("--limit", type=int, default=0, help="export only the N most mutually different packages")
     p.set_defaults(fn=cmd_export_harbor)
+
+    p = sub.add_parser("selfcheck", help="organiser self-check: harbor oracle (=1.0) and nop (=0.0) per package")
+    p.add_argument("tasks", nargs="+", help="Harbor package dirs, or one directory containing them")
+    p.add_argument("--out", default="sc")
+    p.add_argument("--network", choices=["public"], help="run a copy with this network_mode (for hosts that cannot enforce no-network)")
+    p.set_defaults(fn=cmd_selfcheck)
+
+    p = sub.add_parser("bundle", help="assemble <Team>_Track1/ + zip and run the organiser submission validator")
+    p.add_argument("--team", required=True)
+    p.add_argument("--submission", default="submission", help="dir holding generated_tasks/ + pipeline_run.json")
+    p.add_argument("--tasks", default="out/click", help="internal packages (for validation reports + model logs)")
+    p.add_argument("--selfcheck", default="sc", help="selfcheck output dir")
+    p.add_argument("--doc", action="append", default=["docs/WRITEUP.md", "docs/SUBMISSION_README.md"])
+    p.add_argument("--dest", default="dist")
+    p.set_defaults(fn=cmd_bundle)
 
     p = sub.add_parser("report", help="rebuild SUMMARY.md for a task directory")
     p.add_argument("out")
     p.set_defaults(fn=cmd_report)
 
+    load_dotenv()
     args = ap.parse_args(argv)
     return args.fn(args)
 

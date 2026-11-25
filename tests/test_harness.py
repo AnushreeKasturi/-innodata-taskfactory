@@ -172,3 +172,21 @@ def test_harbor_export_matches_interface(repo, tmp_path):
         r = subprocess.run([sys.executable, str(lint), str(d)], capture_output=True, text=True,
                            env={**os.environ, "PYTHONIOENCODING": "utf-8"}, encoding="utf-8")
         assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_select_diverse_prefers_different_tasks(tmp_path):
+    from taskfactory.submit import select_diverse
+
+    def pkg(tid, cat, files, req, axes):
+        d = tmp_path / tid
+        d.mkdir()
+        (d / "requirements.md").write_text(req, encoding="utf-8")
+        (d / "task.json").write_text(json.dumps({"id": tid, "valid": True, "category": cat, "axes": axes,
+                                                 "source_files": files, "fail_to_pass": ["t::a"],
+                                                 "mutation_score": 1.0}), encoding="utf-8")
+
+    pkg("a", "validation", ["types.py"], "Add a step option to IntRange.", {"capability": "types"})
+    pkg("a2", "validation", ["types.py"], "Add a step option to FloatRange.", {"capability": "types"})
+    pkg("b", "lifecycle", ["core.py"], "Commands can be deprecated after a version.", {"capability": "dispatch"})
+    pkg("c", "configuration", ["formatting.py"], "Help text width follows an env var.", {"capability": "help"})
+    assert set(select_diverse(tmp_path, 3)) in ({"a", "b", "c"}, {"a2", "b", "c"})

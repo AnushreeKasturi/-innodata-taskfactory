@@ -62,6 +62,7 @@ def write_package(out: Path, *, repo_id: str, cfg: RepoConfig, base: str, draft:
         "id": tid,
         "title": draft.get("title"),
         "category": draft.get("category"),
+        "axes": draft.get("axes") or {},
         "repo": repo_id,
         "base_commit": base,
         "requirements": "requirements.md",
