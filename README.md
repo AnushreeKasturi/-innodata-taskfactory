@@ -40,16 +40,22 @@ and requires the [Harbor](https://www.harborframework.com/) task interface. This
 git clone https://github.com/pallets/click.git work/click && git -C work/click checkout -b base 8.5.1
 python -m venv work/click/.venv && work/click/.venv/Scripts/python -m pip install -e work/click "pytest==9.2.0"
 
-# generate + validate (needs a model key, see .env.example)
-python -m taskfactory generate --repo work/click --config configs/click.toml --base base -n 8 --out out/click
+# generate + validate until 5 packages are valid (needs a model key in .env, see .env.example)
+python -m taskfactory generate --repo work/click --config configs/click.toml --base base -n 6 --target 5 --out out/click
 
-# export valid packages in the Harbor interface + pipeline_run.json, then run the organiser lint
-python -m taskfactory export-harbor out/click --config configs/click.toml --dest submission/generated_tasks
+# export the 5 most mutually different packages (Harbor interface) + pipeline_run.json, run the organiser lint
+python -m taskfactory export-harbor out/click --config configs/click.toml --dest submission/generated_tasks --limit 5
 
 # official soundness check (needs Docker + `uv tool install harbor`): oracle = 1.0, nop = 0.0
-harbor run -p submission/generated_tasks/<instance_id> -a oracle -k 1 -o sc/<instance_id>/oracle --no-delete -y
-harbor run -p submission/generated_tasks/<instance_id> -a nop    -k 1 -o sc/<instance_id>/nop    --no-delete -y
+python -m taskfactory selfcheck submission/generated_tasks --out sc
+#   on Docker Desktop/WSL2 add --network public: its kernel lacks CONFIG_NFT_FIB_INET, so Harbor
+#   refuses no-network tasks. This checks a copy only; the submitted packages keep no-network.
+
+# assemble dist/<Team>_Track1/ + .zip (pipeline at HEAD, packages, evidence) and run validate_submission.py
+python -m taskfactory bundle --team <TeamName>
 ```
+The variation strategy is written up in `docs/WRITEUP.md`. The packaged submission's own README is
+`docs/SUBMISSION_README.md`.
 Exported packages contain `task.toml`, `instruction.md`, `solution/{solve.sh,patch.diff}`,
 `tests/{test.sh,grade.py,parser.py,run_script.sh,test_patch.diff,fail_to_pass.json,pass_to_pass.json}` and a
 self-contained `environment/Dockerfile` (clone at `base_commit`, fresh git tree, pinned pytest). `grade.py`,

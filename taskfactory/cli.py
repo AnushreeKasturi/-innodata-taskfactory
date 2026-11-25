@@ -227,6 +227,9 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(fn=cmd_report)
 
     load_dotenv()
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")  # organiser tools print unicode marks
     args = ap.parse_args(argv)
     return args.fn(args)
 
